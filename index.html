@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="de">
+
+<head>
+
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>FDHoho007 Netzwerk</title>
+    <meta name="author" content="Fabian Dietrich">
+    <meta name="description" content="Über diese Seite wird das FDHoho007 Netzwerk verwaltet.">
+
+    <script>
+        const IDM_SERVICE_ID = "b78a84b3-0145-4b74-ac8e-a9443f203da2";
+        const IDM_REDIRECT_URI = "https://net.fdhoho007.de/";
+    </script>
+    <script src="idm.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet"
+          integrity="sha384-1BmE4kWBq78iYhFldvKuhfTAU6auU8tT94WrHftjDbrCEXSU1oBoqyl2QvZ6jIW3" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.1/font/bootstrap-icons.css">
+    <link rel="icon" href="https://fdhoho007.de/favicon.ico">
+
+    <style>
+
+        a {
+            cursor: pointer;
+        }
+
+        tr.clickable:hover {
+            background: #e9ecef;
+            cursor: pointer;
+        }
+
+        td {
+            word-break: break-all;
+            width: 33%;
+        }
+
+    </style>
+
+    <script>
+
+        let permissions = [];
+        let cache = [];
+        let struct = {
+            endpoints: {
+                id: "publicKey",
+                cols: ["ip", "name", "publicEndpoint"]
+            },
+            participants: {
+                id: "uid",
+                cols: ["ip", "uid", "homeNet"]
+            },
+            devices: {
+                id: "mac",
+                cols: ["ip", "mac", "name"]
+            }
+        }
+
+        function resolveName(users, id) {
+            for (let e of users)
+                if (e.id === id)
+                    return e.login;
+            return "unknown";
+        }
+
+        function resolveNet(endpoints, publicKey) {
+            for (let e of endpoints)
+                if (e.publicKey === publicKey)
+                    return e.name;
+            return "unknown";
+        }
+
+        function toast(message, error = true) {
+            let toast = document.getElementById("toast");
+            toast.classList.remove("bg-danger");
+            toast.classList.remove("bg-success");
+            toast.classList.add("bg-" + (error ? "danger" : "success"));
+            toast.getElementsByClassName("toast-body")[0].innerText = message;
+            new bootstrap.Toast(toast).show();
+        }
+
+        function api(query, variables = {}, priority = true) {
+            return IDM.graphql("https://net-api.fdhoho007.de/api", query, variables, priority);
+        }
+
+        function logout() {
+            IDM.token.delete();
+            tick();
+        }
+
+        function tick() {
+            api("query { " + (permissions.admin ? "endpoints { publicKey ip name publicEndpoint relations } participants { uid ip homeNet granted } " : "") + "me { uid ip homeNet granted } devices { mac ip1 ip2 name publicKey owner } users { id login participant } } ").then(data => {
+                data = data.data;
+                for (let s of permissions.admin ? ["endpoints", "participants", "devices"] : ["devices"])
+                    updateStruct(data, s);
+                if (permissions.admin && JSON.stringify(data.endpoints) !== JSON.stringify(cache.endpoints)) {
+                    let select = document.getElementById("participants-homeNet");
+                    while (select.options.length > 1)
+                        select.options.remove(1);
+                    for (let e of data.endpoints) {
+                        let option = document.createElement("option");
+                        option.value = e.publicKey;
+                        option.innerText = e.name;
+                        select.options.add(option);
+                    }
+                }
+                if (permissions.admin && JSON.stringify(data.users) !== JSON.stringify(cache.users)) {
+                    let select = document.getElementById("participants-uid");
+                    while (select.options.length > 1)
+                        select.options.remove(1);
+                    for (let e of data.users)
+                        if (document.getElementById("participants-" + e.id) == null) {
+                            let option = document.createElement("option");
+                            option.value = e.id;
+                            option.innerText = e.login;
+                            select.options.add(option);
+                        }
+                }
+                cacheme = cache.me;
+                cache = data;
+                if (!permissions.admin && JSON.stringify(data.me) !== JSON.stringify(cacheme)) {
+                    let e = document.getElementById("granted");
+                    if(e.children[0] !== undefined)
+                        e.children[0].remove();
+                    generateUserCheckboxes(true, e, 4, data.me.granted, data.me.uid);
+                    e.nextElementSibling.onclick = function () {
+                        granted = [];
+                        for (let cb of e.getElementsByClassName("form-check-input"))
+                            if (cb.checked && !granted.includes(cb.value))
+                                granted.push(cb.value);
+                        api("mutation($granted: [String!]!) { setGranted(granted: $granted) { uid } } ", {granted: granted}).then(data => {
+                            toast("Deine Änderungen wurden gespeichert.", false);
+                        });
+                    }
+                }
+            });
+        }
+
+        function updateStruct(data, name) {
+            let s = struct[name];
+            let oldItems = [];
+            if (cache.hasOwnProperty(name))
+                for (let e of cache[name])
+                    oldItems.push(e[s["id"]]);
+            let newItems = [];
+            for (let e of data[name]) {
+                newItems.push(e[s["id"]]);
+                if (!oldItems.includes(e[s["id"]])) {
+                    let row = document.createElement("tr");
+                    row.id = name + "-" + e[s["id"]];
+                    row.classList.add("clickable");
+                    row.onclick = function () {
+                        contextMenu(row, data);
+                    }
+                    for (let i = 0; i < s["cols"].length; i++)
+                        row.appendChild(document.createElement("td"));
+                    let tBody = document.getElementById(name + "-table").tBodies[0];
+                    let before = null;
+                    for (let c of tBody.children)
+                        if (name === "devices") {
+                            if (c.getElementsByTagName("td")[0].innerText.replace(".", "") > e["ip1"] + "" + e["ip2"]) {
+                                before = c;
+                                break;
+                            }
+                        } else if (c.getElementsByTagName("td")[0].innerText > e["ip"]) {
+                            before = c;
+                            break;
+                        }
+                    if (before == null)
+                        tBody.appendChild(row);
+                    else
+                        tBody.insertBefore(row, before);
+                }
+                let row = document.getElementById(name + "-" + e[s["id"]]);
+                let cols = row.getElementsByTagName("td");
+                for (let i = 0; i < s["cols"].length; i++) {
+                    let k = s["cols"][i];
+                    let v = k === "uid" ? resolveName(data.users, e[k]) : (k === "homeNet" ? resolveNet(data.endpoints, e[k]) : (name === "devices" && k === "ip" ? (permissions.admin || permissions.displayAllDevices ? e["ip1"] + "." + e["ip2"] : e["ip2"]) : e[k]));
+                    if (cols[i].innerText !== v)
+                        cols[i].innerText = v;
+                }
+            }
+            if (cache.hasOwnProperty(name))
+                for (let e of cache[name])
+                    if (!newItems.includes(e[s["id"]]) && document.getElementById(name + "-" + e[s["id"]]) != null)
+                        document.getElementById(name + "-" + e[s["id"]]).remove();
+        }
+
+        function addStruct(name) {
+            let elements = [];
+            let input = {};
+            for (let id of struct[name].cols) {
+                let e = document.getElementById(name + "-" + id);
+                elements.push(e);
+                if (name === "devices" && id === "ip") {
+                    input[id + "1"] = permissions.admin && e.value.includes(".") ? parseInt(e.value.split(".")[0]) : (cache.me == null ? 30 : cache.me.ip);
+                    input[id + "2"] = e.value.includes(".") ? parseInt(e.value.split(".")[1]) : parseInt(e.value);
+                } else
+                    input[id] = e.type === "number" ? parseInt(e.value) : e.value;
+            }
+            if (name === "endpoints")
+                input["relations"] = [];
+            if (name === "participants")
+                input["granted"] = [];
+            let nicename = name.charAt(0).toUpperCase() + name.substring(1, name.length - 1);
+            api("mutation($input: " + nicename + "Input!) { modify" + nicename + "(" + name.substring(0, name.length - 1) + ": $input) { " + struct[name].id + " } } ", {input: input}).then(data => {
+                if (data.data) {
+                    tick();
+                    for (let e of elements)
+                        e.value = "";
+                } else if (data.errors)
+                    toast(data.errors[0].message);
+            });
+        }
+
+        let contextMenuElement = {"endpoints": null, "participants": null, "devices": null};
+
+        function contextMenu(tr) {
+            let type = tr.id.substring(0, tr.id.search("-"));
+            let cme = contextMenuElement[type];
+            let id = tr.id.substring(tr.id.search("-") + 1);
+            let data = null;
+            for (let e of cache[type])
+                if (e[struct[type]["id"]] === id) {
+                    data = e;
+                    break;
+                }
+            let close = tr.nextElementSibling != null && tr.nextElementSibling === cme;
+            if (cme != null) {
+                cme.remove();
+                cme = null;
+            }
+            if (!close) {
+                cme = document.createElement("tr");
+                let td = document.createElement("td");
+                td.colSpan = 3;
+                let form = document.createElement("form");
+                form.onsubmit = function () {
+                    let input = {};
+                    for (let name of struct[type].cols) {
+                        let e = document.getElementById(type + "-" + name + "-edit");
+                        if (type === "devices" && name === "ip") {
+                            input[name + "1"] = permissions.admin && e.value.includes(".") ? parseInt(e.value.split(".")[0]) : (cache.me == null ? 30 : cache.me.ip);
+                            input[name + "2"] = e.value.includes(".") ? parseInt(e.value.split(".")[1]) : parseInt(e.value);
+                        } else
+                            input[name] = e.type === "number" ? parseInt(e.value) : e.value;
+                    }
+                    if (type === "endpoints") {
+                        input["relations"] = [];
+                        for (let cb of form.getElementsByClassName("form-check-input"))
+                            if (cb.checked && !input.relations.includes(cb.value))
+                                input.relations.push(cb.value);
+                    }
+                    if (type === "participants") {
+                        input["granted"] = [];
+                        for (let cb of form.getElementsByClassName("form-check-input"))
+                            if (cb.checked && !input.granted.includes(cb.value))
+                                input.granted.push(cb.value);
+                    }
+                    input[struct[type].id] = id;
+                    api("mutation($input: " + nicename + "Input!) { modify" + nicename + "(" + type.substring(0, type.length - 1) + ": $input) { " + struct[type].id + " } } ", {input: input}).then(data => {
+                        if (data.data) {
+                            tick();
+                            cme.remove();
+                            cme = null;
+                        } else if (data.errors)
+                            toast(data.errors[0].message);
+                    });
+                    return false;
+                };
+                let row = document.createElement("div");
+                row.classList.add("row");
+                row.classList.add("g-3");
+                row.classList.add("mb-3");
+                for (let i = 0; i < struct[type].cols.length; i++) {
+                    let value = data[struct[type].cols[i]];
+                    if (type === "devices" && struct[type].cols[i] === "ip")
+                        value = permissions.admin || permissions.displayAllDevices ? data["ip1"] + "." + data["ip2"] : data["ip2"];
+                    row.appendChild(cloneFormControl(type, i, value));
+                }
+                form.appendChild(row);
+                if (type === "endpoints")
+                    generateUserCheckboxes(false, form, 3, data.relations, data.publicKey);
+                else if (type === "participants")
+                    generateUserCheckboxes(true, form, 3, data.granted, data.uid);
+                let nicename = type.charAt(0).toUpperCase() + type.substring(1, type.length - 1);
+                let button = document.createElement("button");
+                button.type = "button";
+                button.classList.add("btn");
+                button.classList.add("btn-danger");
+                button.innerText = "Löschen";
+                button.onclick = function () {
+                    api("mutation($id: String!) { delete" + nicename + "(" + struct[type].id + ": $id) }", {id: id}).then(data => {
+                        if (data.data) {
+                            tr.remove();
+                            cme.remove();
+                            cme = null;
+                        } else
+                            toast(data.errors[0].message);
+                    });
+                }
+                form.appendChild(button);
+                let div = document.createElement("div");
+                div.classList.add("float-end");
+                if (type !== "participants") {
+                    button = document.createElement("button");
+                    button.type = "button";
+                    button.classList.add("btn");
+                    button.classList.add("btn-primary");
+                    button.classList.add("me-2");
+                    button.innerText = "Schlüssel neu generieren";
+                    button.onclick = function () {
+                        api("mutation($id: String!) { regenerate" + nicename + "Keys(" + struct[type].id + ": $id) }", {id: id}).then(data => {
+                            if (data.data) {
+                                let a = document.createElement("a");
+                                a.href = "data:text/plain;charset=utf-8," + encodeURIComponent(data.data["regenerate" + nicename + "Keys"]);
+                                a.download = type === "endpoints" ? "private.key" : "wg0.conf";
+                                a.style.display = 'none';
+                                document.body.appendChild(a);
+                                a.click();
+                                a.remove();
+                                tick();
+                                cme.remove();
+                                cme = null;
+                            } else
+                                toast(data.errors[0].message);
+                        });
+                    }
+                    div.appendChild(button);
+                }
+                button = document.createElement("button");
+                button.type = "button";
+                button.classList.add("btn");
+                button.classList.add("btn-secondary");
+                button.classList.add("me-2");
+                button.innerText = "Abbrechen";
+                button.onclick = function () {
+                    cme.remove();
+                    cme = null;
+                }
+                div.appendChild(button);
+                button = document.createElement("button");
+                button.type = "button";
+                button.classList.add("btn");
+                button.classList.add("btn-success");
+                button.innerText = "Speichern";
+                button.type = "submit";
+                div.appendChild(button);
+                form.appendChild(div);
+                td.appendChild(form);
+                cme.appendChild(td);
+                tr.parentElement.insertBefore(cme, tr.nextSibling);
+                contextMenuElement[type] = cme;
+            }
+        }
+
+        function cloneFormControl(type, colIndex, value) {
+            let col = document.getElementById(type + "-add").children[0].children[colIndex].cloneNode(true);
+            if (col.classList.contains("col-md-4")) {
+                col.classList.remove("col-md-4");
+                col.classList.add("col-md-5");
+            }
+            if (type === "participants" && colIndex === 1) {
+                let option = document.createElement("option");
+                option.value = value;
+                option.innerText = resolveName(cache.users, value);
+                col.children[1].insertBefore(option, col.children[1].options[1]);
+            }
+            if (type === "devices" && colIndex === 1)
+                col.children[1].disabled = true;
+            col.children[0].setAttribute("for", col.children[0].getAttribute("for") + "-edit");
+            col.children[1].id += "-edit";
+            col.children[1].value = value;
+            return col;
+        }
+
+
+        function generateUserCheckboxes(participant, parent, maxPerRow, data, self) {
+            let items = [];
+            if (participant) {
+                for(let u of cache.users)
+                    if(u.participant && u.id !== self)
+                        items.push(u.id);
+            } else {
+                for (let e of cache.endpoints)
+                    if (!items.includes(e.publicKey) && e.publicKey !== self)
+                        items.push(e.publicKey);
+                for (let d of cache.devices)
+                    if (!items.includes(d.publicKey) && d.publicKey !== self)
+                        items.push(d.publicKey);
+            }
+            let row = null;
+            let i = maxPerRow;
+            for (let u of items) {
+                if (i === maxPerRow) {
+                    if (row != null)
+                        parent.appendChild(row);
+                    row = document.createElement("row");
+                    row.classList.add("row");
+                    row.classList.add("g-3");
+                    row.classList.add("mb-3");
+                }
+                i = (i + 1) % maxPerRow;
+                let div = document.createElement("div");
+                div.classList.add("col-md-" + (12 / maxPerRow));
+                div.classList.add("form-check");
+                let cb = document.createElement("input");
+                cb.type = "checkbox";
+                cb.classList.add("form-check-input");
+                cb.id = (participant ? "p" : "e") + "relation-" + u;
+                cb.name = "granted";
+                cb.value = u;
+                if (data.includes(u))
+                    cb.checked = true;
+                div.appendChild(cb);
+                let label = document.createElement("label");
+                label.classList.add("form-check-label");
+                label.setAttribute("for", (participant ? "p" : "e") + "relation-" + u);
+                label.innerText = participant ? resolveName(cache.users, u) : resolveNet(cache.endpoints, u);
+                if (!participant && label.innerText === "unknown") {
+                    for (let d of cache.devices)
+                        if (d.publicKey === u) {
+                            label.innerText = d.name;
+                            break;
+                        }
+                }
+                div.appendChild(label);
+                row.appendChild(div);
+            }
+            if (row != null)
+                parent.appendChild(row);
+        }
+
+        function updatePermissions(data) {
+            permissions = data.data.permissions;
+            if (!permissions.admin && !permissions.displayAllDevices && !permissions.displayOwnDevices) {
+                document.getElementById("no-permission-overlay").style.display = "";
+                IDM.token.delete();
+            } else {
+                for (let e of document.getElementsByClassName("admin-only"))
+                    e.style.display = permissions.admin ? "" : "none";
+                for (let e of document.getElementsByClassName("not-admin"))
+                    e.style.display = permissions.admin ? "none" : "";
+            }
+        }
+
+        window.addEventListener("DOMContentLoaded", function () {
+            api("query { permissions { admin displayAllDevices displayOwnDevices } }").then(data => {
+                IDM.token.refreshHooks.push(function () {
+                    api("query { permissions { admin displayAllDevices displayOwnDevices } }").then(data => {
+                        updatePermissions(data);
+                    });
+                });
+                updatePermissions(data);
+                tick();
+            });
+        });
+        setInterval(tick, 10 * 1000);
+
+    </script>
+
+</head>
+
+<body>
+
+<main>
+
+    <div class="text-center mt-5">
+        <h1><i class="bi bi-globe"></i> FDHoho007 Netzwerkverwaltung</h1>
+        <a href="/README.md" target="_blank" class="fs-4">Dokumentation</a>
+    </div>
+
+    <div class="row g-0 admin-only">
+
+        <div class="col-md-1"></div>
+
+        <div class="container col-md-4">
+            <div class="card round border bg-light mt-5">
+                <div class="card-header">
+                    <i class="bi bi-globe"></i> Endpunkte
+                    <div class="float-end">
+                        <a onclick="logout();" title="Abmelden"><i class="bi bi-box-arrow-right"></i></a>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <form id="endpoints-add" onsubmit="addStruct('endpoints'); return false;">
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-2">
+                                <label for="endpoints-ip" class="form-label">IP</label>
+                                <input id="endpoints-ip" class="form-control" type="number" min="0" max="255"
+                                       placeholder="IP"
+                                       required>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="endpoints-name" class="form-label">Name</label>
+                                <input id="endpoints-name" class="form-control" placeholder="Name" required>
+                            </div>
+                            <div class="col-md-5">
+                                <label for="endpoints-publicEndpoint" class="form-label">Public Endpoint</label>
+                                <input id="endpoints-publicEndpoint" class="form-control" placeholder="Public Endpoint">
+                            </div>
+                            <div class="col-md-1">
+                                <label for="endpoints-submit" class="form-label">&nbsp;</label>
+                                <button type="submit" id="endpoints-submit" class="btn btn-success w-100">+</button>
+                            </div>
+                        </div>
+                    </form>
+                    <table class="table mt-4" id="endpoints-table">
+                        <thead>
+                        <tr>
+                            <th>IP</th>
+                            <th>Name</th>
+                            <th>Public Endpoint</th>
+                        </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="container col-md-4">
+            <div class="card round border bg-light mt-5">
+                <div class="card-header">
+                    <i class="bi bi-people-fill"></i> Teilnehmer
+                    <div class="float-end">
+                        <a onclick="logout();" title="Abmelden"><i class="bi bi-box-arrow-right"></i></a>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <form id="participants-add" onsubmit="addStruct('participants'); return false;">
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-2">
+                                <label for="participants-ip" class="form-label">IP</label>
+                                <input id="participants-ip" class="form-control" type="number" min="0" max="255"
+                                       placeholder="IP"
+                                       required>
+                            </div>
+                            <div class="col-md-4">
+                                <label for="participants-uid" class="form-label">Nutzer</label>
+                                <select id="participants-uid" class="form-control" required>
+                                    <option value="">--- Nutzer auswählen ---</option>
+                                </select>
+                            </div>
+                            <div class="col-md-5">
+                                <label for="participants-homeNet" class="form-label">Heimnetz</label>
+                                <select id="participants-homeNet" class="form-control" required>
+                                    <option value="">--- Heimnetz auswählen ---</option>
+                                </select>
+                            </div>
+                            <div class="col-md-1">
+                                <label for="participants-submit" class="form-label">&nbsp;</label>
+                                <button type="submit" id="participants-submit" class="btn btn-success w-100">+</button>
+                            </div>
+                        </div>
+                    </form>
+                    <table class="table mt-4" id="participants-table">
+                        <thead>
+                        <tr>
+                            <th>IP</th>
+                            <th>Name</th>
+                            <th>Heimnetz</th>
+                        </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-1"></div>
+
+    </div>
+
+    <div class="container not-admin">
+        <div class="card round border bg-light mt-5">
+            <div class="card-header">
+                <i class="bi bi-globe"></i> Zugelassene Verbindungen
+                <div class="float-end">
+                    <a onclick="logout();" title="Abmelden"><i class="bi bi-box-arrow-right"></i></a>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="granted"></div>
+                <button class="btn btn-success float-end">Speichern</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="card round border bg-light mt-5">
+            <div class="card-header">
+                <i class="bi bi-ethernet"></i> Geräte
+                <div class="float-end">
+                    <a onclick="logout();" title="Abmelden"><i class="bi bi-box-arrow-right"></i></a>
+                </div>
+            </div>
+            <div class="card-body">
+                <form id="devices-add" onsubmit="addStruct('devices'); return false;">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-2">
+                            <label for="devices-ip" class="form-label">IP</label>
+                            <input id="devices-ip" class="form-control" type="text" placeholder="IP" required>
+                        </div>
+                        <div class="col-md-5">
+                            <label for="devices-mac" class="form-label">MAC</label>
+                            <input id="devices-mac" class="form-control" placeholder="MAC" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="devices-name" class="form-label">Name</label>
+                            <input id="devices-name" class="form-control" placeholder="Name" required>
+                        </div>
+                        <div class="col-md-1">
+                            <label for="devices-submit" class="form-label">&nbsp;</label>
+                            <button type="submit" id="devices-submit" class="btn btn-success w-100">+</button>
+                        </div>
+                    </div>
+                </form>
+                <table class="table mt-4" id="devices-table">
+                    <thead>
+                    <tr>
+                        <th>IP</th>
+                        <th>MAC</th>
+                        <th>Name</th>
+                    </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</main>
+
+<div id="no-permission-overlay"
+     style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 20; background: rgba(0,0,0,0.4)">
+    <div style="background: white; border-radius: 10px; padding: 20px; text-align: center; width: 450px; margin: 15% auto; border: 1px solid gray;">
+        <img src="https://c.tenor.com/O2MrNW0irFAAAAAC/cat-nah.gif" alt="Nah"><br>
+        <br>
+        Es scheint als bist du momentan kein Teilnehmer des FDHoho007 Netzwerk, und hast daher keinen Zugriff auf
+        diese
+        Seite.<br>
+        <br>
+        <a href="#" onclick="document.getElementById('no-permission-overlay').style.display='none';">Neu anmelden</a>
+    </div>
+</div>
+
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index: 11">
+    <div id="toast" class="toast align-items-center text-white bg-danger border-0" role="alert" aria-live="assertive"
+         aria-atomic="true">
+        <div class="d-flex">
+            <div class="toast-body"></div>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
+                    aria-label="Close"></button>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-ka7Sk0Gln4gmtz2MlQnikT1wXgYsOg+OMhuP+IlRH9sENBO0LRn5q+8nbTov4+1p"
+        crossorigin="anonymous"></script>
+
+</body>
+
+</html>
