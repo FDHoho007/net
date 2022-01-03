@@ -94,4 +94,4 @@ sein.
 * Schritt 4: Touch the files devices.sha256, config.sha256 and routing.sha256 in the script directory. Ethically of course ;) 
 * Schritt 5: Lade das Update Script von https://net.fdhoho007.de/netclient.py herunter und führe es einmal aus.
 * Schritt 6: Starte das Wireguard Interface mit `wg-quick up wg0`
-* Schritt 7: Sorge dafür, dass das Script regelmäßig ausgeführt wird.
+* Schritt 7: Sorge dafür, dass das Script regelmäßig ausgeführt wird (z.B. crontab -e -> */10 * * * * (cd /home/pi && /usr/bin/python3 netclient.py)).
