@@ -1,4 +1,4 @@
-import requests, base64, hmac, hashlib, os, time, re, urllib.request, urllib.parse, xml.etree.ElementTree as ET
+import requests, base64, hmac, hashlib, os, sys, time, re, urllib.request, urllib.parse, xml.etree.ElementTree as ET
 
 # Config
 privateKey = ""
@@ -11,6 +11,8 @@ fritzboxPassword = ""
 
 # ----- Code - Do not change from here on -----
 
+# Utility Functions
+
 def shell_exec(cmd):
     return os.popen(cmd).read()
 
@@ -21,6 +23,61 @@ def request(path):
     hmac_key = hashlib.sha256(base64.b64decode(privateKey)).digest()
     hmac_msg = hashlib.sha256(b"password").hexdigest()
     return requests.get(url="https://net-api.fdhoho007.de/" + path, headers={"Authorization": "Basic " + base64.b64encode((publicKey + ":" + hmac.new(hmac_key, hmac_msg.encode("utf-8"), hashlib.sha256).hexdigest()).encode("utf-8")).decode("utf-8")})
+
+# Wireguard Utiliy Functions
+
+def parse_wg_config(raw):
+    config = {"interface": {}, "peers": []}
+    peer = -1
+    for line in raw.split("\n"):
+        if re.fullmatch("\[Interface\]", line):
+            peer = -1
+        elif re.fullmatch("\[Peer\]( #[a-zA-Z0-9äöüÄÖÜ -]+)?", line):
+            peer += 1
+            if re.fullmatch("\[Peer\]( #[a-zA-Z0-9äöüÄÖÜ -]+)", line):
+                config["peers"].append({"Description": re.sub("\[Peer\] #([a-zA-Z0-9äöüÄÖÜ -]+)", r"\1", line)})
+            else:
+                config["peers"].append({})
+        elif line != "":
+            split = line.split(" = ")
+            if peer < 0:
+                config["interface"][split[0]] = split[1]
+            else:
+                config["peers"][peer][split[0]] = split[1]
+    return config
+
+# Not implemented
+
+def compliance_check_wg_parameter(dataset_old, dataset_new, parameter):
+    if parameter in dataset_new:
+        if parameter == "Endpoint":
+            if not parameter in dataset_old or not dataset_old[parameter] == shell_exec("dig +short " + dataset_new[parameter]) + ":51820":
+                if not dataset_old[parameter] == shell_exec("dig +short " + dataset_new[parameter]) + ":51820":
+                    print("endpoint mismatch " + dataset_old[parameter] + " " + shell_exec("dig +short " + dataset_new[parameter]) + ":51820")
+                else:
+                    print("endpoint mismatch")
+                return False
+        elif not parameter in dataset_old or not dataset_old[parameter] == dataset_new[parameter]:
+            print("parameter mismatch " + parameter + " " + dataset_old[parameter] + " " + dataset_new[parameter])
+            return False
+    elif parameter in dataset_old and not parameter == "Endpoint":
+        print("missing parameter " + parameter)
+        return False
+    return True
+
+def compliance_check_wg(dataset_old, dataset_new):
+    interface_map = {"ListenPort", "PrivateKey"}
+    peer_map = {"PublicKey", "PresharedKey", "AllowedIPs", "Endpoint", "PersistentKeepalive"}
+    for parameter in interface_map:
+        if not compliance_check_wg_parameter(dataset_old["interface"], dataset_new["interface"], parameter):
+            return False
+    if not len(dataset_old["peers"]) == len(dataset_new["peers"]):
+        return False
+    for i in range(0, len(dataset_old["peers"])):
+        for parameter in peer_map:
+            if not compliance_check_wg_parameter(dataset_old["peers"][i], dataset_new["peers"][i], parameter):
+                return False
+    return True
 
 # Based on AVM example: https://avm.de/fileadmin/user_upload/Global/Service/Schnittstellen/AVM_Technical_Note_-_Session_ID_deutsch_2021-05-03.pdf
 
@@ -53,6 +110,7 @@ def fritzboxDelete(sid: str, devid: str):
 
 publicKey = shell_exec("echo " + privateKey + " | wg pubkey").strip()
 ipPrefix = ""
+force = False
 
 def update_dhcp():
     print("[dhcp] Requesting devices ...")
@@ -60,7 +118,7 @@ def update_dhcp():
     sha256 = hashlib.sha224(req.text.encode("utf-8")).hexdigest()
     f = open("devices.sha256", "r")
     cached = f.read()
-    if sha256 == cached:
+    if sha256 == cached and not force:
         print("[dhcp] No changes found.")
     else:
         print("[dhcp] Found some changes.")
@@ -126,53 +184,46 @@ def update_dhcp():
 
 def update_wg():
     print("[wg] Requesting config ...")
-    config = request("config").text.replace("\r", "")
+    configRaw = request("config").text.replace("\r", "")
+    config = parse_wg_config(configRaw)
     global ipPrefix
     print("[wg] Resolving prefix.")
-    ipPrefix = re.sub(r"^Address = (10\.[0-9]{1,3})\.[0-9]{1,3}\.[0-9]{1,3}\/[0-9]{1,2}$", r"\1", config.split("\n")[2])
-    sha256 = hashlib.sha224(config.encode("utf-8")).hexdigest()
+    ipPrefix = re.sub(r"^(10\.[0-9]{1,3})\.[0-9]{1,3}\.[0-9]{1,3}\/[0-9]{1,2}$", r"\1", config["interface"]["Address"])
+    sha256 = hashlib.sha224(configRaw.encode("utf-8")).hexdigest()
     f = open("config.sha256", "r")
     cached = f.read()
-    if sha256 == cached:
-        print("[wg] No changes found.")
+    if sha256 == cached and not force:
+        print("[wg] No changes in configuration found.")
     else:
-        print("[wg] Found some changes.")
-        f = open("config.sha256", "w")
-        f.write(sha256)
-        lines = config.split("\n")
+        #if force or not compliance_check_wg(parse_wg_config(shell_exec("sudo wg showconf wg0")), config):
+        print("[wg] Changes in configuration found.")
         if dhcpType == 1:
-            routes = []
-            data = None
-            interface = False
+            print("[wg] Configuring wireguard via uci.")
+            print("[wg] Configuring interface.")
+            shell_exec("uci set network.wg0.private_key='" + config["interface"]["PrivateKey"] + "'")
+            shell_exec("uci add_list network.wg0.addresses='" + config["interface"]["Address"] + "'")
+            shell_exec("uci set network.wg0.listen_port='" + config["interface"]["ListenPort"] + "'")
+            for i in shell_exec("uci show network | grep wg0peer | sed 's/network\.wg0peer\(.\).*/\1/' | uniq").split("\n"):
+                shell_exec("uci del network.wg0peer" + i)
             i = 0
-            id = 0
-            while i < len(lines):
-                if not re.fullmatch("\[Interface\]", lines[i]) == None:
-                    data = {}
-                    interface = True
-                elif not re.fullmatch("\[Peer\] #[a-zA-Z0-9äöüÄÖÜ -]+", lines[i]) == None:
-                    if not data == None:
-                        aip = process_data(data, interface, id)
-                        if not aip == None and not aip.split(".")[1] == "30":
-                            routes.append(aip)
-                        id += 1
-                    data = {"Description": re.sub("^\[Peer\] #([a-zA-Z0-9äöüÄÖÜ -]+)$", r"\1", lines[i])}
-                    interface = False
-                elif " = " in lines[i]:
-                    data[lines[i].split(" = ")[0]] = lines[i].split(" = ")[1]
+            for peer in config["peers"]:
+                id = str(i)
+                print("[wg] Configuring peer " + peer["Description"] + ".")
+                shell_exec("uci set network.wg0peer" + id + "='wireguard_wg0'")
+                shell_exec("uci set network.wg0peer" + id + ".description='" + peer["Description"] + "'")
+                shell_exec("uci set network.wg0peer" + id + ".public_key='" + peer["PublicKey"] + "'")
+                shell_exec("uci set network.wg0peer" + id + ".preshared_key='" + peer["PresharedKey"] + "'")
+                shell_exec("uci set network.wg0peer" + id + ".allowed_ips='" + peer["AllowedIPs"] + "'")
+                if "Endpoint" in peer:
+                    shell_exec("uci set network.wg0peer" + id + ".endpoint_host='" + peer["Endpoint"].split(":")[0] + "'")
+                if "PersistentKeepalive" in peer:
+                    shell_exec("uci set network.wg0peer" + id + ".persistent_keepalive='" + peer["PersistentKeepalive"] + "'")
                 i += 1
-            if not data == None:
-                aip = process_data(data, interface, id)
-                if not aip == None and not aip.split(".")[1] == "30":
-                    routes.append(aip)
             print("[wg] Restarting wireguard.")
             shell_exec("uci commit network")
             shell_exec("ifdown wg0")
             shell_exec("ifup wg0")
             time.sleep(2)
-            for route in routes:
-                shell_exec("ip route add " + route + " dev wg0")
-            shell_exec("ip route del " + ipPrefix + ".0.0/16 dev wg0")
         elif dhcpType == 2:
             print("[wg] Writing config to /etc/wireguard/wg0.conf")
             f = open("/etc/wireguard/wg0.conf", "w")
@@ -180,40 +231,38 @@ def update_wg():
             f.close()
             print("[wg] Reloading wg-quick.")
             shell_exec("sudo systemctl reload wg-quick@wg0")
-            print("[wg] Configuring routes.")
-            shell_exec("sudo ip route del " + ipPrefix + ".0.0/16 dev wg0")
-            routes = []
-            i = 0
-            peer = False
-            while i < len(lines):
-                if not re.fullmatch("\[Peer\] #[a-zA-Z0-9äöüÄÖÜ -]+", lines[i]) == None and not peer:
-                    peer = True
-                if not re.fullmatch("AllowedIps = .+", lines[i]) == None and peer and not lines[i].split(" = ")[1].split(".")[1] == "30":
-                    routes.append(lines[i].split(" = ")[1])
-                i += 1
             sid = fritzboxSID(fritzboxUser, fritzboxPassword)
             fbRoutes = requests.post("http://fritz.box/data.lua", data="sid=" + sid + "&page=static_route_table", headers={"Content-Type": "application/x-www-form-urlencoded"}).json()["data"]["staticRoutes"]["route"]
+            routes = []
+            for peer in config["peers"]:
+                routes.append(peer["AllowedIPs"])
             for route in fbRoutes:
                 if not route["ipaddr"] + "/16" in routes:
                     print("[wg] Remove static route " + route["ipaddr"] + "/16")
-                    post_data = urllib.parse.urlencode({"sid": sid, "id": route["_node"], "delete": True, "page": "static_route_table"}).encode()
-                    urllib.request.urlopen(urllib.request.Request("http://fritz.box/data.lua", post_data, {"Content-Type": "application/x-www-form-urlencoded"}))
+                    urllib.request.urlopen(urllib.request.Request("http://fritz.box/data.lua", urllib.parse.urlencode({"sid": sid, "id": route["_node"], "delete": True, "page": "static_route_table"}).encode(), {"Content-Type": "application/x-www-form-urlencoded"}))
                 else:
                     routes.remove(route["ipaddr"] + "/16")
             for route in routes:
                 print("[wg] Add static route " + route)
                 post_data = urllib.parse.urlencode({"sid": sid, "ipaddr0": 10, "ipaddr1": route.split("/")[0].split(".")[1], "ipaddr2": 0, "ipaddr3": 0, "netmask0": 255, "netmask1": 255, "netmask2": 0, "netmask3": 0, "gateway0": 10, "gateway1": ipPrefix.split(".")[1], "gateway2": 0, "gateway3": 2, "isActive":1, "route": "", "apply": True, "page": "new_static_route"}).encode()
-                print(post_data)
-                print(urllib.request.urlopen(urllib.request.Request("http://fritz.box/data.lua", post_data, {"Content-Type": "application/x-www-form-urlencoded"})).read())
-    print("[wg] Configuring firewall.")
+                urllib.request.urlopen(urllib.request.Request("http://fritz.box/data.lua", post_data, {"Content-Type": "application/x-www-form-urlencoded"})).read()
+        if dhcpType == 1 or dhcpType == 2:
+            print("[wg] Setting local routes.")
+            shell_exec("sudo ip route del " + ipPrefix + ".0.0/16 dev wg0")
+            for peer in config["peers"]:
+                shell_exec("sudo ip route add " + peer["AllowedIPs"] + " dev wg0")
+    f.close()
+
+def update_firewall():
+    print("[iptables] Configuring firewall.")
     routing = request("routing")
     sha256 = hashlib.sha224(routing.text.encode("utf-8")).hexdigest()
     f = open("routing.sha256", "r")
     cached = f.read()
-    if sha256 == cached:
-        print("[wg] No changes found.")
+    if sha256 == cached and not force:
+        print("[iptables] No changes found.")
     else:
-        print("[wg] Found some changes.")
+        print("[iptables] Found some changes.")
         routing = routing.json()
         f = open("routing.sha256", "w")
         f.write(sha256)
@@ -229,34 +278,14 @@ def update_wg():
                     shell_exec('sudo iptables -A ' + chain + ' -j REJECT')
             for rule in routing["fdhoho007-network-routing"]:
                 shell_exec('sudo iptables -A fdhoho007-network-routing -s "' + rule + '" -j "' + routing["fdhoho007-network-routing"][rule] + '"')
-            shell_exec('sudo iptables -A fdhoho007-network-routing -j REJECT')
-                
+            shell_exec('sudo iptables -A fdhoho007-network-routing -j REJECT')           
     f.close()
 
-def process_data(data, interface, id):
-    id = str(id)
-    if interface:
-        print("[wg] Configuring interface.")
-        shell_exec("uci set network.wg0.private_key='" + data["PrivateKey"] + "'")
-        shell_exec("uci add_list network.wg0.addresses='" + data["Address"] + "'")
-        shell_exec("uci set network.wg0.listen_port='" + data["ListenPort"] + "'")
-        for i in range(0,10):
-            shell_exec("uci del network.wg0peer" + str(i))
-        return None
-    else:
-        print("[wg] Configuring peer " + data["Description"] + ".")
-        shell_exec("uci set network.wg0peer" + id + "='wireguard_wg0'")
-        shell_exec("uci set network.wg0peer" + id + ".description='" + data["Description"] + "'")
-        shell_exec("uci set network.wg0peer" + id + ".public_key='" + data["PublicKey"] + "'")
-        shell_exec("uci set network.wg0peer" + id + ".preshared_key='" + data["PresharedKey"] + "'")
-        shell_exec("uci add_list network.wg0peer" + id + ".allowed_ips='" + data["AllowedIps"] + "'")
-        if "Endpoint" in data:
-            shell_exec("uci set network.wg0peer" + id + ".endpoint_host='" + data["Endpoint"].split(":")[0] + "'")
-        if "PersistentKeepalive" in data:
-            shell_exec("uci set network.wg0peer" + id + ".persistent_keepalive='" + data["PersistentKeepalive"] + "'")
-        return data["AllowedIps"]
+for arg in sys.argv:
+    if arg == "-f":
+        force = True
 
 update_wg()
+update_firewall()
 update_dhcp()
 print("Everything should be up to date.")
-    
