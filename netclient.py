@@ -197,6 +197,8 @@ def update_wg():
     else:
         #if force or not compliance_check_wg(parse_wg_config(shell_exec("sudo wg showconf wg0")), config):
         print("[wg] Changes in configuration found.")
+        f = open("config.sha256", "w")
+        f.write(sha256)
         if dhcpType == 1:
             print("[wg] Configuring wireguard via uci.")
             print("[wg] Configuring interface.")
@@ -223,7 +225,7 @@ def update_wg():
             shell_exec("uci commit network")
             shell_exec("ifdown wg0")
             shell_exec("ifup wg0")
-            time.sleep(2)
+            time.sleep(5)
         elif dhcpType == 2:
             print("[wg] Writing config to /etc/wireguard/wg0.conf")
             f = open("/etc/wireguard/wg0.conf", "w")
