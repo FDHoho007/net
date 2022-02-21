@@ -160,7 +160,7 @@
                     let before = null;
                     for (let c of tBody.children)
                         if (name === "devices") {
-                            if (c.getElementsByTagName("td")[0].innerText.replace(".", "") > e["ip1"] + "" + e["ip2"]) {
+                            if (parseInt(c.getElementsByTagName("td")[0].innerText.replace(".", "")) > parseInt(e["ip1"] + "" + e["ip2"])) {
                                 before = c;
                                 break;
                             }

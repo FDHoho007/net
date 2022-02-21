@@ -22,7 +22,7 @@ def val(line, index):
 def request(path):
     hmac_key = hashlib.sha256(base64.b64decode(privateKey)).digest()
     hmac_msg = hashlib.sha256(b"password").hexdigest()
-    return requests.get(url="https://net-api.fdhoho007.de/" + path, headers={"Authorization": "Basic " + base64.b64encode((publicKey + ":" + hmac.new(hmac_key, hmac_msg.encode("utf-8"), hashlib.sha256).hexdigest()).encode("utf-8")).decode("utf-8")})
+    return requests.get(url="https://net-api.fdhoho007.de/" + path, timeout=5, headers={"Authorization": "Basic " + base64.b64encode((publicKey + ":" + hmac.new(hmac_key, hmac_msg.encode("utf-8"), hashlib.sha256).hexdigest()).encode("utf-8")).decode("utf-8")})
 
 # Wireguard Utiliy Functions
 
@@ -203,7 +203,7 @@ def update_wg():
             print("[wg] Configuring wireguard via uci.")
             print("[wg] Configuring interface.")
             shell_exec("uci set network.wg0.private_key='" + config["interface"]["PrivateKey"] + "'")
-            shell_exec("uci add_list network.wg0.addresses='" + config["interface"]["Address"] + "'")
+            shell_exec("uci set network.wg0.addresses='" + config["interface"]["Address"] + "'")
             shell_exec("uci set network.wg0.listen_port='" + config["interface"]["ListenPort"] + "'")
             for i in shell_exec("uci show network | grep wg0peer | sed 's/network\.wg0peer\(.\).*/\1/' | uniq").split("\n"):
                 shell_exec("uci del network.wg0peer" + i)
@@ -216,6 +216,7 @@ def update_wg():
                 shell_exec("uci set network.wg0peer" + id + ".public_key='" + peer["PublicKey"] + "'")
                 shell_exec("uci set network.wg0peer" + id + ".preshared_key='" + peer["PresharedKey"] + "'")
                 shell_exec("uci set network.wg0peer" + id + ".allowed_ips='" + peer["AllowedIPs"] + "'")
+                shell_exec("uci set network.wg0peer" + id + ".route_allowed_ips='1'")
                 if "Endpoint" in peer:
                     shell_exec("uci set network.wg0peer" + id + ".endpoint_host='" + peer["Endpoint"].split(":")[0] + "'")
                 if "PersistentKeepalive" in peer:
@@ -232,7 +233,7 @@ def update_wg():
             f.write(config)
             f.close()
             print("[wg] Reloading wg-quick.")
-            shell_exec("sudo systemctl reload wg-quick@wg0")
+            shell_exec("sudo systemctl restart wg-quick@wg0")
             sid = fritzboxSID(fritzboxUser, fritzboxPassword)
             fbRoutes = requests.post("http://fritz.box/data.lua", data="sid=" + sid + "&page=static_route_table", headers={"Content-Type": "application/x-www-form-urlencoded"}).json()["data"]["staticRoutes"]["route"]
             routes = []
@@ -248,11 +249,11 @@ def update_wg():
                 print("[wg] Add static route " + route)
                 post_data = urllib.parse.urlencode({"sid": sid, "ipaddr0": 10, "ipaddr1": route.split("/")[0].split(".")[1], "ipaddr2": 0, "ipaddr3": 0, "netmask0": 255, "netmask1": 255, "netmask2": 0, "netmask3": 0, "gateway0": 10, "gateway1": ipPrefix.split(".")[1], "gateway2": 0, "gateway3": 2, "isActive":1, "route": "", "apply": True, "page": "new_static_route"}).encode()
                 urllib.request.urlopen(urllib.request.Request("http://fritz.box/data.lua", post_data, {"Content-Type": "application/x-www-form-urlencoded"})).read()
-        if dhcpType == 1 or dhcpType == 2:
-            print("[wg] Setting local routes.")
-            shell_exec("sudo ip route del " + ipPrefix + ".0.0/16 dev wg0")
-            for peer in config["peers"]:
-                shell_exec("sudo ip route add " + peer["AllowedIPs"] + " dev wg0")
+        #if dhcpType == 1 or dhcpType == 2:
+        #    print("[wg] Setting local routes.")
+        #    shell_exec("sudo ip route del " + ipPrefix + ".0.0/16 dev wg0")
+        #    for peer in config["peers"]:
+        #        shell_exec("sudo ip route add " + peer["AllowedIPs"] + " dev wg0")
     f.close()
 
 def update_firewall():
