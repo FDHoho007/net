@@ -168,7 +168,7 @@ def update_dhcp():
                 mac = dev["mac"]
                 ip = ""
                 if mac in devices:
-                    ip = ipPrefix + "." + devices[mac]["ip1"] + "." + devices[mac]["ip2"]
+                    ip = ipPrefix + "." + str(devices[mac]["ip1"]) + "." + str(devices[mac]["ip2"])
                 if not mac in devices and not dev["ipv4"]["ip"] == "" and re.fullmatch("[0-9]{1,3}\.[0-9]{1,3}\.([05]|11)\.[0-9]{1,3}", dev["ipv4"]["ip"]) == None:
                     print("[dhcp] Removing " + mac + ".")
                     fritzboxDelete(sid, dev["UID"])
@@ -180,7 +180,7 @@ def update_dhcp():
             for mac in devices:
                 dev = devices[mac]
                 print("[dhcp] Add " + mac + ".")
-                fritzboxNew(sid, devices[mac]["name"], mac, ipPrefix + "." + devices[mac]["ip1"] + "." + devices[mac]["ip2"])
+                fritzboxNew(sid, devices[mac]["name"], mac, ipPrefix + "." + str(devices[mac]["ip1"]) + "." + str(devices[mac]["ip2"]))
 
 def update_wg():
     print("[wg] Requesting config ...")
@@ -238,7 +238,11 @@ def update_wg():
             fbRoutes = requests.post("http://fritz.box/data.lua", data="sid=" + sid + "&page=static_route_table", headers={"Content-Type": "application/x-www-form-urlencoded"}).json()["data"]["staticRoutes"]["route"]
             routes = []
             for peer in config["peers"]:
-                routes.append(peer["AllowedIPs"])
+                route = peer["AllowedIPs"]
+                if not re.fullmatch("10\.30\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}", route) == None:
+                    route = "10.30.0.0/16"
+                if not route in routes:
+                    routes.append(route)
             for route in fbRoutes:
                 if not route["ipaddr"] + "/16" in routes:
                     print("[wg] Remove static route " + route["ipaddr"] + "/16")
