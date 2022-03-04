@@ -230,7 +230,7 @@ def update_wg():
         elif dhcpType == 2:
             print("[wg] Writing config to /etc/wireguard/wg0.conf")
             f = open("/etc/wireguard/wg0.conf", "w")
-            f.write(config)
+            f.write(configRaw)
             f.close()
             print("[wg] Restarting wg-quick.")
             shell_exec("sudo systemctl restart wg-quick@wg0")
