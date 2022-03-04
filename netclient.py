@@ -249,6 +249,7 @@ def update_wg():
                 print("[wg] Add static route " + route)
                 post_data = urllib.parse.urlencode({"sid": sid, "ipaddr0": 10, "ipaddr1": route.split("/")[0].split(".")[1], "ipaddr2": 0, "ipaddr3": 0, "netmask0": 255, "netmask1": 255, "netmask2": 0, "netmask3": 0, "gateway0": 10, "gateway1": ipPrefix.split(".")[1], "gateway2": 0, "gateway3": 2, "isActive":1, "route": "", "apply": True, "page": "new_static_route"}).encode()
                 urllib.request.urlopen(urllib.request.Request("http://fritz.box/data.lua", post_data, {"Content-Type": "application/x-www-form-urlencoded"})).read()
+        shell_exec("sudo ip route del " + ipPrefix + ".0.0/16 dev wg0")
         #if dhcpType == 1 or dhcpType == 2:
         #    print("[wg] Setting local routes.")
         #    shell_exec("sudo ip route del " + ipPrefix + ".0.0/16 dev wg0")
