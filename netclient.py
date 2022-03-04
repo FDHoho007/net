@@ -232,7 +232,7 @@ def update_wg():
             f = open("/etc/wireguard/wg0.conf", "w")
             f.write(config)
             f.close()
-            print("[wg] Reloading wg-quick.")
+            print("[wg] Restarting wg-quick.")
             shell_exec("sudo systemctl restart wg-quick@wg0")
             sid = fritzboxSID(fritzboxUser, fritzboxPassword)
             fbRoutes = requests.post("http://fritz.box/data.lua", data="sid=" + sid + "&page=static_route_table", headers={"Content-Type": "application/x-www-form-urlencoded"}).json()["data"]["staticRoutes"]["route"]
